@@ -1,0 +1,6 @@
+---
+- name: Setup EC2 for Docker and CloudWatch Monitoring
+  hosts: all
+  become: true
+  roles:
+    - setup_server

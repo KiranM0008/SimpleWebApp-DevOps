@@ -1,0 +1,2 @@
+[app_servers]
+<serverIp> ansible_ssh_user=<ansibleUser> ansible_ssh_private_key_file=<path/to/private/key>

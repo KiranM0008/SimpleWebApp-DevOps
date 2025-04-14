@@ -1,0 +1,138 @@
+pipeline {
+    agent { label 'host' }
+
+    environment {
+        CONFIG_PATH = '/path/to/config/file/on/agent'
+        DOCKER_TAG = "${BUILD_NUMBER}"
+    }
+
+    triggers {
+        pollSCM('H/5 * * * *')
+    }
+
+    stages {
+        stage('Preparation') {
+            steps {
+                script {
+                    def config = readJSON file: "${CONFIG_PATH}"
+
+                    env.IMAGE_NAME = config.docker.image
+                    env.DOCKER_REGISTRY_URL = config.docker.registryUrl
+                    env.DOCKER_CRED_ID = config.docker.registryCredentialsId
+
+                    env.SMOKE_PORT = config.app.smokeTestPort.toString()
+                    env.DEPLOY_PORT = config.app.deployPort.toString()
+                    env.CONTAINER_PORT = config.app.containerPort.toString()
+                    env.CONTAINER_NAME = config.app.containerName
+
+                    env.CONFIG_CONTENT = writeJSON returnText: true, json: config
+                }
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                checkout([$class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[
+                        url: '<gitHubUrl>',
+                        credentialsId: '<jenkinsCredentialsId>'
+                    ]]
+                ])
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh "docker build -t ${env.IMAGE_NAME}:${DOCKER_TAG} ."
+            }
+        }
+
+        stage('Run Smoke Test Container') {
+            steps {
+                script {
+                    try {
+                        sh "docker run -d --rm -p ${env.SMOKE_PORT}:${env.CONTAINER_PORT} --name ${env.CONTAINER_NAME}-smoketest ${env.IMAGE_NAME}:${DOCKER_TAG}"
+                        sleep 5
+                        def response = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:${env.SMOKE_PORT}", returnStdout: true).trim()
+                        if (response != '200') {
+                            error("App did not return 200 OK. It returned: ${response}")
+                        }
+                    } finally {
+                        sh "docker stop ${env.CONTAINER_NAME}-smoketest || true"
+                    }
+                }
+            }
+        }
+
+        stage('Security Scan (Grype)') {
+            steps {
+                sh "grype ${env.IMAGE_NAME}:${DOCKER_TAG} --fail-on high -c grype.yaml"
+            }
+        }
+
+        stage('Push to Docker Hub') {
+            steps {
+                withDockerRegistry([credentialsId: env.DOCKER_CRED_ID, url: env.DOCKER_REGISTRY_URL]) {
+                    sh "docker push ${env.IMAGE_NAME}:${DOCKER_TAG}"
+                }
+            }
+        }
+
+        stage('Cleanup') {
+            steps {
+                sh "docker rmi ${env.IMAGE_NAME}:${DOCKER_TAG} || true"
+            }
+        }
+
+        stage('Deploy to Servers') {
+            steps {
+                script {
+                    def config = readJSON text: env.CONFIG_CONTENT
+                    def servers = config.servers
+
+                    withCredentials([usernamePassword(
+                        credentialsId: env.DOCKER_CRED_ID,
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )]) {
+                        def batchSize = 2
+                        for (int i = 0; i < servers.size(); i += batchSize) {
+                            def batch = servers[i..Math.min(i + batchSize - 1, servers.size() - 1)]
+                            def parallelSteps = [:]
+
+                            for (srv in batch) {
+                                def server = srv
+                                parallelSteps["Deploy to ${server.host}"] = {
+                                    sshagent (credentials: [server.credentialsId]) {
+                                        sh """
+                                            ssh -o StrictHostKeyChecking=no -p ${server.port} ${server.user}@${server.host} '
+                                                echo "${DOCKER_PASS}" | docker login -u "${DOCKER_USER}" --password-stdin &&
+                                                docker pull ${env.IMAGE_NAME}:${DOCKER_TAG} &&
+                                                docker stop ${env.CONTAINER_NAME} || true &&
+                                                docker rm ${env.CONTAINER_NAME} || true &&
+                                                mkdir -p ~/${env.CONTAINER_NAME}-log &&
+                                                docker run -d -p ${env.DEPLOY_PORT}:${env.CONTAINER_PORT} -v ~/${env.CONTAINER_NAME}-log:/app/log --name ${env.CONTAINER_NAME} ${env.IMAGE_NAME}:${DOCKER_TAG}
+                                            '
+                                        """
+                                    }
+                                }
+                            }
+
+                            parallel parallelSteps
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo 'Pipeline failed. Deployment skipped.'
+        }
+        always {
+            echo 'Pipeline completed.'
+        }
+    }
+}

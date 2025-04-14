@@ -1,0 +1,67 @@
+---
+- name: Install aptitude
+  apt:
+    name: aptitude
+    state: latest
+    update_cache: true
+
+- name: Install system packages
+  apt:
+    pkg:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - software-properties-common
+      - python3-pip
+      - virtualenv
+      - python3-setuptools
+    state: latest
+    update_cache: true
+
+- name: Add Docker GPG key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Add Docker repo
+  apt_repository:
+    repo: deb https://download.docker.com/linux/ubuntu jammy stable
+    state: present
+
+- name: Install Docker CE
+  apt:
+    name: docker-ce
+    state: latest
+    update_cache: true
+
+- name: Install Python Docker module
+  pip:
+    name: docker
+
+- name: Add ubuntu user to docker group
+  user:
+    name: ubuntu
+    groups: docker
+    append: yes
+
+- name: Download CloudWatch Agent
+  get_url:
+    url: https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+    dest: /tmp/amazon-cloudwatch-agent.deb
+
+- name: Install CloudWatch Agent
+  apt:
+    deb: /tmp/amazon-cloudwatch-agent.deb
+
+- name: Copy CloudWatch Agent config file
+  copy:
+    src: "{{ cloudwatch_config_file }}"
+    dest: "{{ cloudwatch_config_path }}/amazon-cloudwatch-agent.json"
+    owner: root
+    group: root
+    mode: 0644
+
+- name: Start CloudWatch Agent
+  shell: |
+    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config -m ec2 -c file:{{ cloudwatch_config_path }}/amazon-cloudwatch-agent.json -s

@@ -1,0 +1,5 @@
+vpc_cidr = "10.0.0.0/16"
+subnet_cidr = "10.0.0.0/24"
+subnet_availability_zone = "us-east-1a"
+ami = "ami-0f9de6e2d2f067fca"
+ec2_instance_type = "t2.micro"

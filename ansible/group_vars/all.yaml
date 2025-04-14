@@ -1,0 +1,4 @@
+app_log_path: "/app/log/app.log"
+cloudwatch_config_file: "cloudwatch-config.json"
+cloudwatch_config_path: "/opt/aws/amazon-cloudwatch-agent/etc"
+cloudwatch_namespace: "AppServerMetrics"
